@@ -6,19 +6,21 @@ import re
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from wordcloud import WordCloud
+from stop_words import get_stop_words
 import matplotlib.pyplot as plt
 
-# Allow nested event loops
+# Allow nested event loops (required for running async code in Streamlit)
 nest_asyncio.apply()
 
 # ----------------------------------------------------
-# Messages Dictionary (English only for simplicity)
+# Messages Dictionary (English only)
 # ----------------------------------------------------
 MESSAGES = {
     "title": "Telegram Post Wordcloud Generator",
     "overview": (
         "This tool signs you into Telegram and then downloads all posts from a specified channel or chat. "
-        "It generates a wordcloud of the main words found in the posts, displaying progress as posts are downloaded."
+        "It generates a wordcloud of the main words found in the posts, with common stopwords removed "
+        "for English, Ukrainian and Russian."
     ),
     "step1": "Step 1: Sign in to Telegram",
     "enter_api_id": "Enter your API ID",
@@ -51,7 +53,7 @@ st.title(MESSAGES["title"])
 st.markdown(MESSAGES["overview"])
 
 # ----------------------------------------------------
-# Async Helper: Connect and return a Telegram client
+# Asynchronous Helper: Create and return a Telegram client
 # ----------------------------------------------------
 async def async_get_client(api_id, api_hash, phone):
     client = TelegramClient("session_" + phone, api_id, api_hash)
@@ -64,7 +66,7 @@ async def async_get_client(api_id, api_hash, phone):
 if "loop" not in st.session_state:
     st.session_state.loop = asyncio.new_event_loop()
 
-# Reset session button (disconnects client and removes session file)
+# Reset session button: Disconnect client and remove session file
 if st.button(MESSAGES["reset_session"]):
     if "client" in st.session_state:
         st.session_state.loop.run_until_complete(st.session_state.client.disconnect())
@@ -148,10 +150,10 @@ def process_channel_link(link):
     pattern_chat = r"(?:https?://)?t\.me/c/(\d+)"
     match_chat = re.search(pattern_chat, link)
     if match_chat:
-        # For t.me/c/ links, the channel ID is converted by subtracting an offset.
+        # For t.me/c/ links, convert numeric part to channel ID
         channel_id = -(int(match_chat.group(1)) + 1000000000000)
         return channel_id
-    # Otherwise, assume a standard username link (which may include a post ID, so we extract just the channel part)
+    # Otherwise, assume a standard username link (which may include a post ID)
     pattern_username = r"(?:https?://)?t\.me/([A-Za-z0-9_]+)"
     match_username = re.search(pattern_username, link)
     if match_username:
@@ -159,17 +161,17 @@ def process_channel_link(link):
     return None
 
 # ----------------------------------------------------
-# Download Posts and Generate Wordcloud
+# Download Posts and Generate Combined Text for Wordcloud
 # ----------------------------------------------------
-async def download_posts_and_generate_wordcloud(client, channel_identifier):
+async def download_posts(client, channel_identifier):
     try:
-        # Retrieve the channel entity
+        # Retrieve the channel entity using the identifier.
         entity = await client.get_entity(channel_identifier)
     except Exception as e:
         st.error("Error retrieving channel: " + str(e))
         return None
 
-    # Retrieve the latest post to use its ID as an approximate total
+    # Use the latest post to approximate the total number of posts.
     top_msg = await client.get_messages(entity, limit=1)
     total_posts = top_msg[0].id if top_msg else 0
 
@@ -178,12 +180,11 @@ async def download_posts_and_generate_wordcloud(client, channel_identifier):
     progress_bar = st.progress(0)
     progress_text = st.empty()
 
-    # Iterate through messages in ascending order (if supported)
+    # Iterate through messages in ascending order.
     async for message in client.iter_messages(entity, reverse=True):
         count += 1
         if message.message:
             texts.append(message.message)
-        # Update progress bar using count out of total_posts (if available)
         if total_posts:
             progress = min(int((count / total_posts) * 100), 100)
             progress_bar.progress(progress)
@@ -208,11 +209,22 @@ if ("client" in st.session_state and
             else:
                 with st.spinner(MESSAGES["processing_channel"]):
                     full_text = st.session_state.loop.run_until_complete(
-                        download_posts_and_generate_wordcloud(st.session_state.client, channel_identifier)
+                        download_posts(st.session_state.client, channel_identifier)
                     )
                 if full_text:
-                    # Generate and display the wordcloud
-                    wc = WordCloud(width=800, height=400, background_color="white").generate(full_text)
+                    # Retrieve stopwords for English, Ukrainian and Russian
+                    english_stopwords = set(get_stop_words('en'))
+                    ukrainian_stopwords = set(get_stop_words('uk'))
+                    russian_stopwords = set(get_stop_words('ru'))
+                    combined_stopwords = english_stopwords.union(ukrainian_stopwords).union(russian_stopwords)
+                    
+                    # Generate and display the wordcloud using the combined stopwords.
+                    wc = WordCloud(
+                        stopwords=combined_stopwords,
+                        width=800,
+                        height=400,
+                        background_color="white"
+                    ).generate(full_text)
                     st.image(wc.to_array(), caption=MESSAGES["wordcloud_generated"])
                 else:
                     st.warning("No posts found or an error occurred during download.")
